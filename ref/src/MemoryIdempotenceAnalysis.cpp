@@ -185,7 +185,7 @@ void CandidateInfo::add(const AntidependencePathTy &Path) {
   // Update other structures.
   PriorityElements_.UnintersectedPaths++;
   assert(UnintersectedPaths_.insert(&Path) && "already inserted");
-}
+}getLocator
 
 void CandidateInfo::remove(const AntidependencePathTy &Path) {
   // Update priority.
