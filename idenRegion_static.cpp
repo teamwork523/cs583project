@@ -48,6 +48,7 @@ namespace {
         AliasAnalysis *AA;       // Current AliasAnalysis information
         LoopInfo      *LI;       // Current LoopInfo
         DominatorTree *DT;       // Dominator Tree for the current Loop.
+        LAMPLoadProfile *LLP;    // LAMP profiling
         PredIteratorCache PredCache_;   // Cache fetch predecessor of a BB
           
         typedef std::pair<Instruction *, Instruction *> AntiDepPairTy;
@@ -61,9 +62,9 @@ namespace {
         typedef SmallVector<AntiDepPathTy, 16> AntiDepPaths;
         AntiDepPaths AntiDepPaths_;
         
-        // Hitting Set
-        typedef SmallPtrSet<Instruction *, 16> HittingSet;
-        HittingSet HittingSet_;
+        // Hitting set of instructions
+        typedef SmallPtrSet<Instruction *, 16> SmallPtrSetTy;
+        SmallPtrSetTy HittingSet_;
 
         // pass constructor
         idenRegion() : FunctionPass(ID) {}
@@ -73,6 +74,7 @@ namespace {
             AU.addRequired<DominatorTree>();
             AU.addRequired<LoopInfo>();
             AU.addRequired<AliasAnalysis>();
+            AU.addRequired<LAMPLoadProfile>();
         }
         
         // Find all necessary information about Function
@@ -89,7 +91,14 @@ namespace {
                                  unsigned StoreDstSize);
         void computeAntidependencePaths();
         void computeHittingSet();
+        // return a set of BB that need cut
+        std::set<BasicBlock *> computeHittingSetinBB();
+
+        Instruction* findLargestCount(std::map<Instruction *, int> Map);
         
+        //===----------------------------------------------------------------------===//
+        // Printers
+        //===----------------------------------------------------------------------===//
         // print instruction and its BB location
         std::string getLocator(const Instruction &I) {
             unsigned Offset = 1;
@@ -131,11 +140,75 @@ namespace {
             }
             errs() << " }";
         }
+
+        // print Inst -> index
+        void printMap(std::map<Instruction *, int> Map) {
+            for (std::map<Instruction *, int>::iterator I = Map.begin(), E = Map.end(); I != E; I++) {
+                errs() << "   " << getLocator(*(I->first)) << " --> " << I->second << "\n";
+            }
+        }
+        
+        // print index -> Inst
+        void printMap(std::map<int, Instruction *> Map) {
+            for (std::map<int, Instruction *>::iterator I = Map.begin(), E = Map.end(); I != E; I++) {
+                errs() << "   " << I->first << "-->" << getLocator(*(I->second)) << "\n";
+            }
+        }
+        
+        // print inst -> list of position
+        void printMap(std::map<Instruction *, std::set<int> > Map) {
+            for (std::map<Instruction *, std::set<int> >::iterator I = Map.begin(), E = Map.end(); I != E; I++) {
+                errs() << "   " << getLocator(*(I->first)) << " --> ";
+                for (std::set<int>::iterator II = I->second.begin(), EE = I->second.end(); II != EE; II++) {
+                    errs() << *II << " ";
+                }
+                errs() << "\n";
+            }
+        }
+
+        // print 2D array
+        void print2Darray(int *array, int len, std::map<int, Instruction *>idToinst) {
+            std::string del = " ";
+            errs() << del;
+            for (std::map<int, Instruction *>::iterator I = idToinst.begin(), E = idToinst.end(); I != E; I++) {
+                errs() << getLocator(*(I->second)) << del;
+            }
+            errs() << "\n";
+            for (int i = 0; i < len; i++) {
+                errs() << getLocator(*(idToinst[i])) << del;
+                for (int j = 0; j < len; j++) {
+                    errs() << array[i * len + j] << del;
+                }
+                errs() << "\n";
+            }
+        }
+
+        // print Hitting set
+        void printHittingSet(const SmallPtrSetTy &SPS) {
+            errs() << "[ ";
+            for (SmallPtrSetTy::iterator I = SPS.begin(), E = SPS.end(), First = I; I != E; I++) {
+                if (First != I)
+                    errs() << ", ";
+                errs() << getLocator(**I);
+            }
+            errs() << " ]\n";
+        }
+
+        // print Set
+        void printSet(std::set<BasicBlock *> BBSet) {
+            errs() << "[ ";
+            for (std::set<BasicBlock *>::iterator I = BBSet.begin(), E = BBSet.end(), First = I; I != E; I++) {
+                if (First != I)
+                    errs() << ", ";
+                errs() << (*I)->getName().str();
+            }
+            errs() << " ]\n";
+        }
     };
 }
 
 char idenRegion::ID = 0;
-static RegisterPass<idenRegion> X("idenRegion", "EECS 583 project", false, false);
+static RegisterPass<idenRegion> X("idenRegion-static", "EECS 583 project", false, false);
 
 bool idenRegion::runOnFunction(Function &F) {
     // Get our Loop and Alias Analysis information...
@@ -167,7 +240,14 @@ bool idenRegion::runOnFunction(Function &F) {
     errs() << "----------Compute the Hitting Set------------\n";
     errs() << "---------------------------------------------\n";
     computeHittingSet();
-
+    errs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+    errs() << "!!!!! Hitting Set is !!!!!!\n";
+    errs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+    printHittingSet(HittingSet_);
+    errs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+    errs() << "!!!! Hitting Set BB is !!!!\n";
+    errs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+    printSet(computeHittingSetinBB());
     return false;
 }
 
@@ -286,7 +366,7 @@ void idenRegion::computeAntidependencePaths() {
             // find current Node's iDOM
             curDTNode = curDTNode->getIDom();
             if (curDTNode == NULL)
-                break;domCollection
+                break;
             curBB = curDTNode->getBlock();
             curInst = curBB->end();
         }
@@ -304,8 +384,70 @@ void idenRegion::computeAntidependencePaths() {
     errs() << "\n";
 }
 
+Instruction* idenRegion::findLargestCount(std::map<Instruction *, int> Map) {
+    // TODO: linear right now, optimize later
+    Instruction* temp_max;
+    int max = 0;
+    for (std::map<Instruction *, int>::iterator I = Map.begin(), E = Map.end(); I != E; I++) {
+        // exclude those in the hitting set
+        if (I->second > max) {
+            temp_max = I->first;
+            max = I->second;
+        }
+    }
+    return temp_max;
+}
+
 void idenRegion::computeHittingSet() {
+    std::vector<AntiDepPathTy> collectionPaths;
+    typedef std::map<Instruction *, int> instCountTy;
+    typedef std::map<Instruction *, std::set<int> > instPosTy; 
+    instCountTy instCount;
+    instPosTy instPos;
+    int index = 0;
+    for (AntiDepPaths::iterator I = AntiDepPaths_.begin(), E = AntiDepPaths_.end(); I != E; I++, index++) {
+        collectionPaths.push_back(*I);
+        errs() << "   " << index << ": ";
+        printPath(*I);
+        errs() << "\n";
+        // construct the map
+        for (AntiDepPathTy::iterator II = I->begin(), EE = I->end(); II != EE; II++) {
+            instCount[*II] += 1;
+            instPos[*II].insert(index);
+        }
+    }
+    errs() << "~~~~ Inst Count Map:\n";
+    printMap(instCount);
+    errs() << "~~~~ Inst Position Map:\n";
+    printMap(instPos);
     
+    // Generate the Hitting set based on Map information
+    int totalPaths = collectionPaths.size();
+    std::set<int> HittedSet;
+    while ((int)HittedSet.size() < totalPaths) {
+        bool increase = false;
+        int oldLen = HittedSet.size();
+        while (!increase) {
+            Instruction* maxCountInst = findLargestCount(instCount);
+            std::set<int> tempPos = instPos[maxCountInst];
+            for (std::set<int>::iterator I = tempPos.begin(), E = tempPos.end(); I != E; I++) {
+                HittedSet.insert(*I);
+            }
+            instCount.erase(maxCountInst);
+            if ((int)HittedSet.size() > oldLen) {
+                increase = true;
+                HittingSet_.insert(maxCountInst);
+            }
+        }
+    }
+}
+
+std::set<BasicBlock *> idenRegion::computeHittingSetinBB() {
+    std::set<BasicBlock *> HittingSetBB;
+    for (SmallPtrSetTy::iterator I = HittingSet_.begin(), E = HittingSet_.end(); I != E; I++) {
+        HittingSetBB.insert((*I)->getParent());
+    }
+    return HittingSetBB;
 }
 
 
