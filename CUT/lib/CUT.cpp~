@@ -15,6 +15,20 @@
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Compiler.h"
 
+//added from Haokun's project
+#include "llvm/InstrTypes.h"
+#include "llvm/Module.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/BasicBlock.h"
+#include "llvm/Instructions.h"
+#include "llvm/Support/PredIteratorCache.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/LoopPass.h"
+#include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/Passes.h"
+#include "llvm/Analysis/LoopInfo.h"
+
 using namespace std;
 using namespace llvm;
 
@@ -27,135 +41,78 @@ namespace
 {
     struct CUT : public FunctionPass
     {
-    
-      static char ID;
-      ProfileInfo* PI;
+        static char ID;
+        ProfileInfo* PI;
 
-      void Copy(Instruction *i);
-      void Cut(Function &F, list<BasicBlock*> *cut_list, map<BasicBlock*, BasicBlock*> *jump_list);
-      void Recurse(BasicBlock *jump, BasicBlock *block, map<BasicBlock*, BasicBlock*> *jump_list, list<BasicBlock*> *cut_list);
+        //added from Haokun's project
+        AliasAnalysis *AA;              // Current AliasAnalysis information
+        LoopInfo      *LI;              // Current LoopInfo
+        DominatorTree *DT;              // Dominator Tree for the current Loop.
+        PredIteratorCache PredCache_;   // Cache fetch predecessor of a BB
+        //LAMPLoadProfile *LLP;           // LAMP profiling
 
-      CUT() : FunctionPass(ID) {}
-      void getAnalysisUsage(AnalysisUsage &AU) const
-      {
-	      AU.addRequired<ProfileInfo>();
-      }
+        //added from Haokun's project
+        typedef std::pair<Instruction *, Instruction *> AntiDepPairTy;
+        typedef SmallVector<Instruction *, 16> AntiDepPathTy;  
+        // Intermediary data structure 1.
+        typedef SmallVector<AntiDepPairTy, 16> AntiDepPairs;
+        AntiDepPairs AntiDepPairs_;
+        // Intermediary data structure 2.
+        typedef SmallVector<AntiDepPathTy, 16> AntiDepPaths;
+        AntiDepPaths AntiDepPaths_;
+        // Hitting set of instructions
+        typedef SmallPtrSet<Instruction *, 16> SmallPtrSetTy;
+        SmallPtrSetTy HittingSet_;
 
-      virtual bool runOnFunction(Function &F)
-      {
-          if(function == 0)
-          {
-              stat_file.open("stats.txt");
-          }
-          else
-          {
-              stat_file.open("stats.txt", std::fstream::app);
-          }
+        void IP(Function &F);
+        void Copy(Instruction *i);
+        void Cut(Function &F, list<BasicBlock*> *cut_list, map<BasicBlock*, BasicBlock*> *jump_list);
+        void Recurse(BasicBlock *jump, BasicBlock *block, map<BasicBlock*, BasicBlock*> *jump_list, list<BasicBlock*> *cut_list);
 
-          function++;
+        //added from Haokun's project
+        bool startHitting(Function &F);
+        void findAntidependencePairs(StoreInst *Store);
+        bool scanForAliasingLoad(BasicBlock::iterator I,
+                                 BasicBlock::iterator E,
+                                 StoreInst *Store,
+                                 Value *StoreDst,
+                                 unsigned StoreDstSize);
+        void computeAntidependencePaths();
+        void computeHittingSet();
+        // return a set of BB that need cut
+        std::set<BasicBlock *> computeHittingSetinBB();
+        Instruction* findLargestCount(std::map<Instruction *, int> Map);
 
-          list<Instruction*>* copy_instructions = new list<Instruction*>();
-          clone_map = new std::map<Instruction*, Instruction*>();
+        CUT() : FunctionPass(ID) {}
+        void getAnalysisUsage(AnalysisUsage &AU) const
+        {
+	        AU.addRequired<ProfileInfo>();
+	        AU.addRequired<DominatorTree>();
+            AU.addRequired<LoopInfo>();
+            AU.addRequired<AliasAnalysis>();
+            //AU.addRequired<LAMPLoadProfile>();
+        }
 
-          for(Function::iterator b = F.begin(), be = F.end(); b != be; ++b)
-          {
-              for(BasicBlock::iterator I=b->begin(), ie = b->end(); I!=ie; ++I)
-              {
-                  unsigned opcode = I->getOpcode();
+        virtual bool runOnFunction(Function &F)
+        {
+            if(function == 0)
+            {
+                stat_file.open("stats.txt");
+            }
+            else
+            {
+                stat_file.open("stats.txt", std::fstream::app);
+            }
 
-                  //branch
-		          if(opcode >= 1 && opcode <= 7)
-                  {
-			          //do not copy branch instructions (they would be skipped anyway)
-                      //copy_instructions->push_back(&*I);
-		          }
-                  //memory
-		          else if(opcode >= 26 && opcode <= 32)
-		          {
-			          //memory instructions are protected by ECC
-                      if(opcode == 27)// || opcode == 28)
-                      {
-                          copy_instructions->push_back(&*I);
-                      }
-		          }
-                  //floating point ALU
-		          else if(opcode == 9 || opcode == 11 || opcode == 13 || 
-                    opcode == 16 || opcode == 19 || opcode == 36 || 
-                    opcode == 37 || opcode == 40 || opcode == 41 || 
-                    opcode == 46)
-		          {
-			          //floating point arithmetic must be checked
-                      copy_instructions->push_back(&*I);
-		          }
-                  //integer ALU
-		          else if(opcode == 8 || opcode == 10 || opcode == 12 || 
-                    opcode == 14 || opcode == 15 || opcode == 17 || 
-                    opcode == 17 || (opcode >= 20 && opcode <= 25) || 
-                    (opcode >= 33 && opcode <= 35) || opcode == 38 || 
-                    opcode == 39 || (opcode >= 42 && opcode <= 45))
-		          {
-			          //integer arithmetic must be checked
-                      copy_instructions->push_back(&*I);
-		          }
-                  //other
-		          else
-		          {
-                      //other instructions can cause errors and will
-                      //not be copied for the time being
+            function++;
 
-			          //other instructions will also be checked
-                      //copy_instructions->push_back(&*I);
-		          }	
-              }
-          }
+            startHitting(F);
+            IP(F);
 
-          for (list<Instruction*>::iterator I = copy_instructions->begin(), ie = copy_instructions->end(); I != ie; I++)
-          {
-              Copy(*I);
-          }
+            stat_file.close();
 
-          Instruction *first = *copy_instructions->begin();
-          BasicBlock *begin = first->getParent();
-          BasicBlock *split = SplitBlock(begin, begin->getFirstNonPHI(), this);
-          BranchInst::Create(split, begin->getTerminator());
-          begin->getTerminator()->eraseFromParent();
-
-          //return true;
-
-          list<BasicBlock*> *cut_list = new list<BasicBlock*>();
-          map<BasicBlock*, BasicBlock*> *jump_list = new map<BasicBlock*, BasicBlock*>();
-
-          int index = 0;
-          for(Function::iterator b = F.begin(), be = F.end(); b != be; ++b)
-          {
-              index++;
-              if(index == 3) cut_list->push_back(&*b);
-          }
-
-          Cut(F, cut_list, jump_list);
-
-          for (list<Instruction*>::iterator I = copy_instructions->begin(), ie = copy_instructions->end(); I != ie; I++)
-          {
-              Instruction *origi = *I;
-              Instruction *clone = (*clone_map)[*I];
-              begin = (*jump_list)[clone->getParent()];
-
-              //if(origi->getOpcode() > 19 || origi->getOpcode() < 8) continue;
-
-              BasicBlock *homeBB = clone->getParent();
-              BasicBlock *lastBB = SplitBlock(homeBB, homeBB->getTerminator(), this); 
-
-              stat_file << "A:" << clone->getName().str() << ":B:" << origi->getName().str() << ":C\n";
-
-              ICmpInst* compare = new ICmpInst(homeBB->getTerminator(), CmpInst::ICMP_EQ, clone, origi, "compare");
-              BranchInst::Create(lastBB, begin, compare, homeBB->getTerminator());
-              homeBB->getTerminator()->eraseFromParent();
-          }
-
-          stat_file.close();
-
-          return true;
-      }
+            return true;
+        }
 
     };
 }
@@ -163,10 +120,117 @@ namespace
 char CUT::ID = 0;
 static RegisterPass<CUT> X("idemcut", "Idempotent Processign World Pass", false, false);
 
-void CUT::Cut(Function &F, list<BasicBlock*> *cut_list, map<BasicBlock*, BasicBlock*> *jump_list)
+void CUT::IP(Function &F)
 {
+    list<Instruction*>* copy_instructions = new list<Instruction*>();
+    clone_map = new std::map<Instruction*, Instruction*>();
+
     for(Function::iterator b = F.begin(), be = F.end(); b != be; ++b)
     {
+        for(BasicBlock::iterator I=b->begin(), ie = b->end(); I!=ie; ++I)
+        {
+            unsigned opcode = I->getOpcode();
+
+            //branch
+	        if(opcode >= 1 && opcode <= 7)
+            {
+                //do not copy branch instructions (they would be skipped anyway)
+                //copy_instructions->push_back(&*I);
+            }
+            //memory
+            else if(opcode >= 26 && opcode <= 32)
+            {
+                //memory instructions are protected by ECC
+                if(opcode == 27)// || opcode == 28)
+                {
+                    copy_instructions->push_back(&*I);
+                }
+            }
+            //floating point ALU
+		    else if(opcode == 9 || opcode == 11 || opcode == 13 || 
+              opcode == 16 || opcode == 19 || opcode == 36 || 
+              opcode == 37 || opcode == 40 || opcode == 41 || 
+              opcode == 46)
+		    {
+			    //floating point arithmetic must be checked
+                copy_instructions->push_back(&*I);
+		    }
+            //integer ALU
+		    else if(opcode == 8 || opcode == 10 || opcode == 12 || 
+              opcode == 14 || opcode == 15 || opcode == 17 || 
+              opcode == 17 || (opcode >= 20 && opcode <= 25) || 
+              (opcode >= 33 && opcode <= 35) || opcode == 38 || 
+              opcode == 39 || (opcode >= 42 && opcode <= 45))
+		    {
+			    //integer arithmetic must be checked
+                copy_instructions->push_back(&*I);
+		    }
+            //other
+		    else
+		    {
+                //other instructions can cause errors and will
+                //not be copied for the time being
+
+			    //other instructions will also be checked
+                //copy_instructions->push_back(&*I);
+		    }	
+        }
+    }
+
+    for (list<Instruction*>::iterator I = copy_instructions->begin(), ie = copy_instructions->end(); I != ie; I++)
+    {
+        Copy(*I);
+    }
+
+    Instruction *first = *copy_instructions->begin();
+    BasicBlock *begin = first->getParent();
+    BasicBlock *split = SplitBlock(begin, begin->getFirstNonPHI(), this);
+    BranchInst::Create(split, begin->getTerminator());
+    begin->getTerminator()->eraseFromParent();
+
+    //return true;
+
+    list<BasicBlock*> *cut_list = new list<BasicBlock*>();
+    map<BasicBlock*, BasicBlock*> *jump_list = new map<BasicBlock*, BasicBlock*>();
+
+    std::set<BasicBlock*> cutter = computeHittingSetinBB();
+    for (set<BasicBlock*>::iterator I = cutter.begin(), ie = cutter.end(); I != ie; I++)
+    {
+        cut_list->push_back(*I);
+        stat_file << "CUT ADDED\n";
+    }
+
+    Cut(F, cut_list, jump_list);
+
+    for (list<Instruction*>::iterator I = copy_instructions->begin(), ie = copy_instructions->end(); I != ie; I++)
+    {
+        Instruction *origi = *I;
+        Instruction *clone = (*clone_map)[*I];
+        begin = (*jump_list)[clone->getParent()];
+
+        //if(origi->getOpcode() > 19 || origi->getOpcode() < 8) continue;
+
+        BasicBlock *homeBB = clone->getParent();
+        BasicBlock *lastBB = SplitBlock(homeBB, homeBB->getTerminator(), this); 
+
+        stat_file << "A:" << clone->getName().str() << ":B:" << origi->getName().str() << ":C\n";
+
+        ICmpInst* compare = new ICmpInst(homeBB->getTerminator(), CmpInst::ICMP_EQ, clone, origi, "compare");
+        BranchInst::Create(lastBB, begin, compare, homeBB->getTerminator());
+        homeBB->getTerminator()->eraseFromParent();
+    }
+}
+
+void CUT::Cut(Function &F, list<BasicBlock*> *cut_list, map<BasicBlock*, BasicBlock*> *jump_list)
+{
+    int first = 0;
+    for(Function::iterator b = F.begin(), be = F.end(); b != be; ++b)
+    {
+        if(first == 0)
+        {
+            first = 1;
+            continue;
+        }
         BasicBlock *block = &*b;
         BasicBlock *jump = block;
         //ignore blocks that have already been added
@@ -256,5 +320,200 @@ void CUT::Copy(Instruction *i)
     }
 }
 
+bool CUT::startHitting(Function &F)
+{
+    // Get our Loop and Alias Analysis information...
+    LI = &getAnalysis<LoopInfo>();
+    AA = &getAnalysis<AliasAnalysis>();
+    DT = &getAnalysis<DominatorTree>();
+    
+    for (Function::iterator BB = F.begin(); BB != F.end(); ++BB) {
+        for (BasicBlock::iterator I = BB->begin(); I != BB->end(); ++I) {
+            if (StoreInst *Store = dyn_cast<StoreInst>(I)) {
+                findAntidependencePairs(Store);
+            }
+        }
+    }
+    
+    if (AntiDepPairs_.empty())
+        return false;
+        
+    computeAntidependencePaths();
+    computeHittingSet();
+    return true;
+}
 
+void CUT::findAntidependencePairs(StoreInst *Store)
+{
+    // errs() << "** Analyzing Store: " << *Store << "\n";
+    // errs() << "** At location:     " << getLocator(*Store) << "\n";
+    Value *StoreDst = Store->getOperand(1); // dst
+    // Value *First = Store->getOperand(0); // src
+    // errs() << "Store src type is " << *(First->getType()) << "\n";
+    unsigned StoreDstSize = AA->getTypeStoreSize(Store->getOperand(0)->getType());
+
+    // Perform a reverse depth-first search to find aliasing loads.
+    typedef std::pair<BasicBlock *, BasicBlock::iterator> WorkItem;
+    SmallVector<WorkItem, 8> Worklist;
+    SmallPtrSet<BasicBlock *, 32> Visited;
+
+    BasicBlock *StoreBB = Store->getParent();
+    Worklist.push_back(WorkItem(StoreBB, Store));
+
+    do {
+        BasicBlock *BB;
+        BasicBlock::iterator I, E;
+        tie(BB, I) = Worklist.pop_back_val();
+
+        // If we are revisiting StoreBB, we scan to Store to complete the cycle.
+        // Otherwise we end at BB->begin().
+        E = (BB == StoreBB && I == BB->end()) ? Store : BB->begin();
+        
+        // Scan for an aliasing load.  Terminate this path if we see one or a cut is
+        // already forced.
+        if (scanForAliasingLoad(I, E, Store, StoreDst, StoreDstSize))
+            continue;
+            
+        // If the path didn't terminate, continue on to predecessors.
+        // errs() << "###### Predecessor Info #######" << "\n";
+        for (BasicBlock **P = PredCache_.GetPreds(StoreBB); *P; ++P) {
+            //errs() << "## Name is " << (*P)->getName() << "\n";
+            if (Visited.insert(*P))
+                Worklist.push_back(WorkItem((*P), (*P)->end()));
+        }
+    } while (!Worklist.empty());
+}
+
+bool CUT::scanForAliasingLoad (BasicBlock::iterator I,
+                                      BasicBlock::iterator E,
+                                      StoreInst *Store,
+                                      Value *StoreDst,
+                                      unsigned StoreDstSize)
+{
+    // I is the end of the instruction, E is the begining of the instruction
+    while (I != E) {
+        --I;
+        if (LoadInst *Load = dyn_cast<LoadInst>(I)) {
+            // Load all the may alias case
+            if (AA->getModRefInfo(Load, StoreDst, StoreDstSize) & AliasAnalysis::Ref) {
+                AntiDepPairTy Pair = AntiDepPairTy(I, Store);
+                AntiDepPairs_.push_back(Pair);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void CUT::computeAntidependencePaths() {
+    // Iterate through every pair of antidependency
+    // Record all the store along the path
+    for (AntiDepPairs::iterator I = AntiDepPairs_.begin(), E = AntiDepPairs_.end(); I != E; I++) {
+        BasicBlock::iterator Load, Store;
+        tie(Load, Store) = *I;
+
+        // create a new path
+        AntiDepPaths_.resize(AntiDepPaths_.size()+1);
+        AntiDepPathTy &newPath = AntiDepPaths_.back();
+
+        // Always record current store
+        newPath.push_back(Store);
+
+        // Load and store in the same basic block
+        BasicBlock::iterator curInst = Store;
+        BasicBlock *LoadBB = Load->getParent(), *StoreBB = Store->getParent();
+        if (LoadBB == StoreBB && DT->dominates(Load, Store)) {
+            while(--curInst != Load) {
+                if (isa<StoreInst>(curInst))
+                    newPath.push_back(curInst);
+            }
+            continue;
+        }
+
+        // Load and store in different basic block
+        BasicBlock *curBB = StoreBB;
+        DomTreeNode *curDTNode = DT->getNode(StoreBB), *LoadDTNode = DT->getNode(LoadBB);
+        // loop until load is not 
+        while (DT->dominates(LoadDTNode, curDTNode)) {
+            BasicBlock::iterator E;
+            // check if Load and current node in the same BB
+            if (curBB == LoadBB) {
+                E = Load;
+            } else {
+                E = curBB->begin();
+            }
+            // scan current BB
+            while(curInst != E) {
+                if (isa<StoreInst>(--curInst)) {
+                    newPath.push_back(curInst);
+                }
+            }
+            // find current Node's iDOM
+            curDTNode = curDTNode->getIDom();
+            if (curDTNode == NULL)
+                break;
+            curBB = curDTNode->getBlock();
+            curInst = curBB->end();
+        }
+    }
+}
+
+Instruction* CUT::findLargestCount(std::map<Instruction *, int> Map) {
+    // TODO: linear right now, optimize later
+    Instruction* temp_max;
+    int max = 0;
+    for (std::map<Instruction *, int>::iterator I = Map.begin(), E = Map.end(); I != E; I++) {
+        // exclude those in the hitting set
+        if (I->second > max) {
+            temp_max = I->first;
+            max = I->second;
+        }
+    }
+    return temp_max;
+}
+
+void CUT::computeHittingSet() {
+    std::vector<AntiDepPathTy> collectionPaths;
+    typedef std::map<Instruction *, int> instCountTy;
+    typedef std::map<Instruction *, std::set<int> > instPosTy; 
+    instCountTy instCount;
+    instPosTy instPos;
+    int index = 0;
+    for (AntiDepPaths::iterator I = AntiDepPaths_.begin(), E = AntiDepPaths_.end(); I != E; I++, index++) {
+        collectionPaths.push_back(*I);
+        // construct the map
+        for (AntiDepPathTy::iterator II = I->begin(), EE = I->end(); II != EE; II++) {
+            instCount[*II] += 1;
+            instPos[*II].insert(index);
+        }
+    }
+    
+    // Generate the Hitting set based on Map information
+    int totalPaths = collectionPaths.size();
+    std::set<int> HittedSet;
+    while ((int)HittedSet.size() < totalPaths) {
+        bool increase = false;
+        int oldLen = HittedSet.size();
+        while (!increase) {
+            Instruction* maxCountInst = findLargestCount(instCount);
+            std::set<int> tempPos = instPos[maxCountInst];
+            for (std::set<int>::iterator I = tempPos.begin(), E = tempPos.end(); I != E; I++) {
+                HittedSet.insert(*I);
+            }
+            instCount.erase(maxCountInst);
+            if ((int)HittedSet.size() > oldLen) {
+                increase = true;
+                HittingSet_.insert(maxCountInst);
+            }
+        }
+    }
+}
+
+std::set<BasicBlock *> CUT::computeHittingSetinBB() {
+    std::set<BasicBlock *> HittingSetBB;
+    for (SmallPtrSetTy::iterator I = HittingSet_.begin(), E = HittingSet_.end(); I != E; I++) {
+        HittingSetBB.insert((*I)->getParent());
+    }
+    return HittingSetBB;
+}
 

@@ -67,7 +67,17 @@
   /home/tjandrew/Install/llvm/include/llvm/ADT/STLExtras.h \
   /home/tjandrew/Install/llvm/include/llvm/Analysis/Dominators.h \
   /home/tjandrew/Install/llvm/include/llvm/PassManagers.h \
-  /home/tjandrew/Install/llvm/include/llvm/Support/PrettyStackTrace.h
+  /home/tjandrew/Install/llvm/include/llvm/Support/PrettyStackTrace.h \
+  /home/tjandrew/Install/llvm/include/llvm/Module.h \
+  /home/tjandrew/Install/llvm/include/llvm/GlobalVariable.h \
+  /home/tjandrew/Install/llvm/include/llvm/GlobalAlias.h \
+  /home/tjandrew/Install/llvm/include/llvm/Metadata.h \
+  /home/tjandrew/Install/llvm/include/llvm/ADT/FoldingSet.h \
+  /home/tjandrew/Install/llvm/include/llvm/ADT/OwningPtr.h \
+  /home/tjandrew/Install/llvm/include/llvm/Support/PredIteratorCache.h \
+  /home/tjandrew/Install/llvm/include/llvm/Support/Allocator.h \
+  /home/tjandrew/Install/llvm/include/llvm/Analysis/AliasAnalysis.h \
+  /home/tjandrew/Install/llvm/include/llvm/Support/CallSite.h
 
 /home/tjandrew/Install/llvm/include/llvm/Pass.h:
 
@@ -204,3 +214,23 @@
 /home/tjandrew/Install/llvm/include/llvm/PassManagers.h:
 
 /home/tjandrew/Install/llvm/include/llvm/Support/PrettyStackTrace.h:
+
+/home/tjandrew/Install/llvm/include/llvm/Module.h:
+
+/home/tjandrew/Install/llvm/include/llvm/GlobalVariable.h:
+
+/home/tjandrew/Install/llvm/include/llvm/GlobalAlias.h:
+
+/home/tjandrew/Install/llvm/include/llvm/Metadata.h:
+
+/home/tjandrew/Install/llvm/include/llvm/ADT/FoldingSet.h:
+
+/home/tjandrew/Install/llvm/include/llvm/ADT/OwningPtr.h:
+
+/home/tjandrew/Install/llvm/include/llvm/Support/PredIteratorCache.h:
+
+/home/tjandrew/Install/llvm/include/llvm/Support/Allocator.h:
+
+/home/tjandrew/Install/llvm/include/llvm/Analysis/AliasAnalysis.h:
+
+/home/tjandrew/Install/llvm/include/llvm/Support/CallSite.h:
