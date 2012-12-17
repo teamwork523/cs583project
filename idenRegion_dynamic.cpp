@@ -65,6 +65,10 @@ namespace {
         // Hitting set of instructions
         typedef SmallPtrSet<Instruction *, 16> SmallPtrSetTy;
         SmallPtrSetTy HittingSet_;
+        
+        // NEW
+        // Dynamic Load/Store Path
+        AntiDepPairs DynamicPairs_;
 
         // pass constructor
         idenRegion() : FunctionPass(ID) {}
@@ -76,13 +80,22 @@ namespace {
             AU.addRequired<AliasAnalysis>();
             AU.addRequired<LAMPLoadProfile>();
         }
-        
+       
         // Find all necessary information about Function
         virtual bool runOnFunction(Function &F);          
         
         //===----------------------------------------------------------------------===//
         // Helpers
         //===----------------------------------------------------------------------===//
+        ////////////////
+        // New Begin
+        ////////////////
+        bool isAntiDepPair(LoadInst *Load, StoreInst *Store);   // for Dynamic analysis
+        bool IsStoreInDynPairs(StoreInst *Store);    // check if a store inside a Dynamic Pairs
+                                                     // if so, add to dependency pair directly
+        ////////////////
+        // New End
+        ////////////////
         void findAntidependencePairs(StoreInst *Store);
         bool scanForAliasingLoad(BasicBlock::iterator I,
                                  BasicBlock::iterator E,
@@ -114,7 +127,7 @@ namespace {
         // display anti-dependency pair
         void printPair(const AntiDepPairTy &P) {
             errs() << "( " << getLocator(*P.first) << ", " 
-                          << getLocator(*P.second) << " )";
+            << getLocator(*P.second) << " )";
         }
 
         // display anti-dependency pairs
@@ -126,8 +139,8 @@ namespace {
                 printPair(*I);
             }
             errs() << " ]";
-        }    
-
+        }
+        
         // display anti-dependency path
         void printPath(const AntiDepPathTy &P) {
             errs() << "[ ";
@@ -204,7 +217,7 @@ namespace {
                 errs() << getLocator(**I);
             }
             errs() << " ]\n";
-            errs() << "Hitting Set Length is " << i << "\n";
+            errs() << "Hitting set Length is " << i << "\n";
         }
 
         // print Set
@@ -223,13 +236,54 @@ namespace {
 }
 
 char idenRegion::ID = 0;
-static RegisterPass<idenRegion> X("idenRegion-static", "EECS 583 project", false, false);
+static RegisterPass<idenRegion> X("idenRegion-dynamic", "EECS 583 project", false, false);
 
 bool idenRegion::runOnFunction(Function &F) {
     // Get our Loop and Alias Analysis information...
     LI = &getAnalysis<LoopInfo>();
     AA = &getAnalysis<AliasAnalysis>();
     DT = &getAnalysis<DominatorTree>();
+    LLP = &getAnalysis<LAMPLoadProfile>();
+    typedef std::map<std::pair<Instruction*, Instruction*>*, unsigned int> dynamicDepMapTy;
+    typedef std::map<BasicBlock*, std::set<std::pair<Instruction*, Instruction*>* > > LoopToDepTy;
+    typedef std::set<std::pair<Instruction*, Instruction*>* > instSetTy;
+    dynamicDepMapTy dynamicDepMap = LLP->DepToTimesMap;
+    LoopToDepTy LoopToDep = LLP->LoopToDepSetMap;
+    
+    //////////////
+    // NEW begin
+    //////////////
+    errs() << "*********************************************\n";
+    errs() << "************* LAMP information **************\n";
+    errs() << "*********************************************\n";
+    errs() << "       Inst_1   -->     Innt_2\tCount\n";
+    for (dynamicDepMapTy::iterator I = dynamicDepMap.begin(), E = dynamicDepMap.end(); I != E; I++) {
+        Instruction *firstInst = I->first->first;
+        Instruction *secondInst = I->first->second;
+        errs() << *(firstInst->getType()) << ";" << getLocator(*firstInst) << " --> " \
+               << *(secondInst->getType()) << ";" << getLocator(*secondInst) << "\t" << I->second << "\n";
+        // push load/store into Dynamic pair if load/store is actually anti-dep
+        if (isa<LoadInst>(firstInst) && isa<StoreInst>(secondInst)) {
+            LoadInst *Load = dyn_cast<LoadInst>(firstInst);
+            StoreInst *Store = dyn_cast<StoreInst>(secondInst);
+            if (Load && Store){
+                errs() << "Working on the load/store pair ...\n";
+                if (isAntiDepPair(Load, Store)) {
+                    AntiDepPairTy dynPair = AntiDepPairTy(Load, Store);
+                    DynamicPairs_.push_back(dynPair);
+                }
+            }
+        }
+    }
+    errs() << "#############################\n";
+    errs() << "#### Right dynamic pairs: \n";
+    errs() << "#############################\n";
+    printPairs(DynamicPairs_);
+    errs() << "\n";
+    /////////////
+    // New end
+    /////////////
+
     errs() << "---------------------------------------------\n";
     errs() << "----------Find Anti-dependency region--------\n";
     errs() << "---------------------------------------------\n";
@@ -239,23 +293,32 @@ bool idenRegion::runOnFunction(Function &F) {
         errs() << "##### BB #####" << "\n";
         for (BasicBlock::iterator I = BB->begin(); I != BB->end(); ++I) {
             if (StoreInst *Store = dyn_cast<StoreInst>(I)) {
-                findAntidependencePairs(Store);
+                //////////////
+                // NEW begin
+                //////////////
+                // check if we already find the load/store pair in the LAMP profile info
+                if (!IsStoreInDynPairs(Store)) {
+                    findAntidependencePairs(Store);
+                }
+                //////////////
+                // New End
+                //////////////
             }
         }
     }
-    
-    if (AntiDepPairs_.empty())
-        return false;
-    errs() << "---------------------------------------------\n";
-    errs() << "----------Find anti-dependency Path----------\n";
-    errs() << "---------------------------------------------\n";
-    computeAntidependencePaths();
     
     errs() << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
     errs() << "^^^^^^ Anti-Dep Pair ^^^^^^^\n";
     errs() << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
     printPairs(AntiDepPairs_);
     errs() << "\n";
+
+    if (AntiDepPairs_.empty())
+        return false;
+    errs() << "---------------------------------------------\n";
+    errs() << "----------Find anti-dependency Path----------\n";
+    errs() << "---------------------------------------------\n";
+    computeAntidependencePaths();
     
     errs() << "---------------------------------------------\n";
     errs() << "----------Compute the Hitting Set------------\n";
@@ -271,6 +334,73 @@ bool idenRegion::runOnFunction(Function &F) {
     printSet(computeHittingSetinBB());
     return false;
 }
+
+///////////////////
+// NEW begin
+///////////////////
+// check dynamic pair satisfy anti-dependency
+bool idenRegion::isAntiDepPair(LoadInst *Load, StoreInst *Store) {
+    // perform a DFS to check if store is after load
+    typedef std::pair<BasicBlock *, BasicBlock::iterator> WorkItem;
+    SmallVector<WorkItem, 8> Worklist;
+    SmallPtrSet<BasicBlock *, 32> Visited;
+
+    BasicBlock *LoadBB = Load->getParent();
+    Worklist.push_back(WorkItem(LoadBB, Load));
+
+    do {
+        BasicBlock *BB;
+        BasicBlock::iterator I, E;
+        tie(BB, I) = Worklist.pop_back_val();
+
+        errs() << "... On BB " << BB->getName() << "\n";
+        
+        // If we revisited LoadBB, we scan to Load to complete cycle
+        // Otherwise we end at BB->end()
+        E = (BB == LoadBB && I == BB->begin()) ? Load : BB->end();
+        // errs() << "... Last instruction on current BB is " << getLocator(*E) << "\n";
+
+        // iterate throught BB to check if Load instruction exist in the BB
+        while (I != E) {
+            // errs() << "...... Inst: " << getLocator(*I) << "\n";
+            if (isa<StoreInst>(I) && dyn_cast<StoreInst>(I) == Store) {
+                return true;
+            }
+            ++I;
+        }
+        
+        // get current BB's succesor
+        TerminatorInst* ti = BB->getTerminator();
+        int numSuccesor = ti->getNumSuccessors();
+        for (int i = 0; i < numSuccesor; i++) {
+            BasicBlock* nextSuc = ti->getSuccessor(i);
+            // don't count backedge
+            if (Visited.insert(nextSuc) && !DT->dominates(nextSuc, BB)) {
+                Worklist.push_back(WorkItem(nextSuc, nextSuc->begin()));
+            }
+        }
+    } while(!Worklist.empty());
+
+    return false;
+}
+
+bool idenRegion::IsStoreInDynPairs(StoreInst *Store) {
+    // iterate dynamic analysis
+    for (AntiDepPairs::iterator I = DynamicPairs_.begin(), E = DynamicPairs_.end(); I != E; I++) {
+        if (dyn_cast<StoreInst>(I->second) == Store) {
+            if (LoadInst* Load = dyn_cast<LoadInst>(I->first)) {
+                AntiDepPairTy Pair = AntiDepPairTy(Load, Store);
+                // insert into dependent path
+                AntiDepPairs_.push_back(Pair);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+////////////////
+// New End
+////////////////
 
 void idenRegion::findAntidependencePairs(StoreInst *Store) {
     // errs() << "** Analyzing Store: " << *Store << "\n";
