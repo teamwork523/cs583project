@@ -113,20 +113,9 @@ namespace {
 
         // display anti-dependency pair
         void printPair(const AntiDepPairTy &P) {
-            errs() << "( " << getLocator(*P.first) << ", " 
-                          << getLocator(*P.second) << " )";
+            errs() << "Antidependence Pair ( " << getLocator(*P.first) << ", "
+            << getLocator(*P.second) << " )";
         }
-
-        // display anti-dependency pairs
-        void printPairs(AntiDepPairs ADP) {
-            errs() << "[ ";
-            for (AntiDepPairs::iterator I = ADP.begin(), E = ADP.end(), First = I; I != E; I++) {
-                if (First != I)
-                    errs() << ", ";
-                printPair(*I);
-            }
-            errs() << " ]";
-        }    
 
         // display anti-dependency path
         void printPath(const AntiDepPathTy &P) {
@@ -197,27 +186,23 @@ namespace {
         // print Hitting set
         void printHittingSet(const SmallPtrSetTy &SPS) {
             errs() << "[ ";
-            int i = 0;
-            for (SmallPtrSetTy::iterator I = SPS.begin(), E = SPS.end(), First = I; I != E; I++, i++) {
+            for (SmallPtrSetTy::iterator I = SPS.begin(), E = SPS.end(), First = I; I != E; I++) {
                 if (First != I)
                     errs() << ", ";
                 errs() << getLocator(**I);
             }
             errs() << " ]\n";
-            errs() << "Hitting Set Length is " << i << "\n";
         }
 
         // print Set
         void printSet(std::set<BasicBlock *> BBSet) {
             errs() << "[ ";
-            int i = 0;
-            for (std::set<BasicBlock *>::iterator I = BBSet.begin(), E = BBSet.end(), First = I; I != E; I++, i++) {
+            for (std::set<BasicBlock *>::iterator I = BBSet.begin(), E = BBSet.end(), First = I; I != E; I++) {
                 if (First != I)
                     errs() << ", ";
                 errs() << (*I)->getName().str();
             }
             errs() << " ]\n";
-            errs() << "Hitting BB Length is " << i << "\n";
         }
     };
 }
@@ -250,12 +235,6 @@ bool idenRegion::runOnFunction(Function &F) {
     errs() << "----------Find anti-dependency Path----------\n";
     errs() << "---------------------------------------------\n";
     computeAntidependencePaths();
-    
-    errs() << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
-    errs() << "^^^^^^ Anti-Dep Pair ^^^^^^^\n";
-    errs() << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
-    printPairs(AntiDepPairs_);
-    errs() << "\n";
     
     errs() << "---------------------------------------------\n";
     errs() << "----------Compute the Hitting Set------------\n";
