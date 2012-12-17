@@ -141,10 +141,10 @@ void CUT::IP(Function &F)
             else if(opcode >= 26 && opcode <= 32)
             {
                 //memory instructions are protected by ECC
-                if(opcode == 27)// || opcode == 28)
-                {
-                    copy_instructions->push_back(&*I);
-                }
+                //if(opcode == 27)// || opcode == 28)
+                //{
+                //    copy_instructions->push_back(&*I);
+                //}
             }
             //floating point ALU
 		    else if(opcode == 9 || opcode == 11 || opcode == 13 || 
@@ -182,13 +182,14 @@ void CUT::IP(Function &F)
         Copy(*I);
     }
 
+    //create a new block to start the program (prevents error when looping
+    //to start of function)
     Instruction *first = *copy_instructions->begin();
     BasicBlock *begin = first->getParent();
     BasicBlock *split = SplitBlock(begin, begin->getFirstNonPHI(), this);
     BranchInst::Create(split, begin->getTerminator());
     begin->getTerminator()->eraseFromParent();
 
-    //return true;
 
     list<BasicBlock*> *cut_list = new list<BasicBlock*>();
     map<BasicBlock*, BasicBlock*> *jump_list = new map<BasicBlock*, BasicBlock*>();
@@ -197,18 +198,19 @@ void CUT::IP(Function &F)
     for (set<BasicBlock*>::iterator I = cutter.begin(), ie = cutter.end(); I != ie; I++)
     {
         cut_list->push_back(*I);
-        stat_file << "CUT ADDED\n";
     }
 
+    //create the regions
     Cut(F, cut_list, jump_list);
+    
+    //jump to region list
+    map<BasicBlock*, int> *phi_list = new map<BasicBlock*, int>();
 
     for (list<Instruction*>::iterator I = copy_instructions->begin(), ie = copy_instructions->end(); I != ie; I++)
     {
         Instruction *origi = *I;
         Instruction *clone = (*clone_map)[*I];
         begin = (*jump_list)[clone->getParent()];
-
-        //if(origi->getOpcode() > 19 || origi->getOpcode() < 8) continue;
 
         BasicBlock *homeBB = clone->getParent();
         BasicBlock *lastBB = SplitBlock(homeBB, homeBB->getTerminator(), this); 
@@ -218,6 +220,28 @@ void CUT::IP(Function &F)
         ICmpInst* compare = new ICmpInst(homeBB->getTerminator(), CmpInst::ICMP_EQ, clone, origi, "compare");
         BranchInst::Create(lastBB, begin, compare, homeBB->getTerminator());
         homeBB->getTerminator()->eraseFromParent();
+    
+        for(BasicBlock::iterator I=begin->begin(), ie = begin->end(); I!=ie; ++I)
+        {
+            unsigned opcode = I->getOpcode();
+            
+            //find PHI nodes
+            if(opcode == 47)
+            {
+                PHINode *phi = dyn_cast<PHINode>(&*I); 
+            
+                //Instruction *p = dyn_cast<Instruction>(phi->getIncomingValue(0));            
+                //Instruction *clone = phi->clone();//p->clone();
+                //std::string name = p->getName().str() + ".phiclone";
+                //if(!p->getType()->isVoidTy())
+                //{
+                //    clone->setName(name);
+                //}
+                //clone->insertAfter(phi);
+                        
+                phi->addIncoming(phi, homeBB);
+            }
+        }
     }
 }
 
@@ -226,13 +250,15 @@ void CUT::Cut(Function &F, list<BasicBlock*> *cut_list, map<BasicBlock*, BasicBl
     int first = 0;
     for(Function::iterator b = F.begin(), be = F.end(); b != be; ++b)
     {
+        BasicBlock *block = &*b;
+        BasicBlock *jump = block;
+        
         if(first == 0)
         {
             first = 1;
             continue;
         }
-        BasicBlock *block = &*b;
-        BasicBlock *jump = block;
+        
         //ignore blocks that have already been added
         if(jump_list->find(block) != jump_list->end()) { stat_file << "ignore\n"; continue; }
 
@@ -276,7 +302,7 @@ void CUT::Recurse(BasicBlock *jump, BasicBlock *block, map<BasicBlock*, BasicBlo
         }
         if(add_child == 1)
         {
-            Recurse(jump, child, jump_list, cut_list);
+            if(jump_list->find(child) == jump_list->end()) Recurse(jump, child, jump_list, cut_list);
         }
     }
 }
